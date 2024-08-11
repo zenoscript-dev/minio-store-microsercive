@@ -2,6 +2,7 @@ import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { MinioClient, MinioService } from 'nestjs-minio-client';
 import * as crypto from 'crypto';
 import { BufferedFile } from './file.model';
+import { mimeTypes, refrenceTypes } from './types/refrenceTypes.types';
 
 @Injectable()
 export class MinioClientService {
@@ -61,67 +62,47 @@ export class MinioClientService {
 
   public async upload(
     file: BufferedFile,
-    fileDetails: { id: string; referenceType: string; referenceId: string },
+    userId: string,
     bucketName: string = this.bucketName,
   ) {
-    const { id, referenceType, referenceId } = fileDetails;
-    if (!(file.mimetype.includes('jpeg') || file.mimetype.includes('png'))) {
-      throw new HttpException(
-        'File type not supported',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const timestamp = Date.now().toString();
-    const hashedFileName = crypto
-      .createHash('md5')
-      .update(timestamp)
-      .digest('hex');
-    const extension = file.originalname.substring(
-      file.originalname.lastIndexOf('.'),
-      file.originalname.length,
-    );
 
-    // this is how each file details will come once the file is uploaded.
-    // {
-    //     fieldname: 'image',
-    //     originalname: 'Screenshot 2024-07-29 at 1.13.45 PM.png',
-    //     encoding: '7bit',
-    //     mimetype: 'image/png',
-    //     buffer: <Buffer 89 50 4e 47 0d 0a 1a 0a 00 00 00 0d 49 48 44 52 00 00 07 80 00 00 04 38 08 06 00 00 00 e8 d3 c1 43 00 00 01 5e 69 43 43 50 49 43 43 20 50 72 6f 66 69 ... 498149 more bytes>,
-    //     size: 498199
-    //   }
+    // Check for supported file types
+    if (!(file.mimetype.includes('jpeg') || file.mimetype.includes('png'))) {
+      throw new HttpException('File type not supported', HttpStatus.BAD_REQUEST);
+    }
+
+    // Generate a unique file name
+    const timestamp = Date.now().toString();
+    const hashedFileName = crypto.createHash('md5').update(timestamp).digest('hex');
+    const extension = file.originalname.substring(file.originalname.lastIndexOf('.'));
+
+    // Set metadata
     const metaData = {
       'Content-Type': file.mimetype,
-      // 'filename': file.originalname,
       'mimetype': file.mimetype,
-      'referenceId': referenceId, // refrence id from db
-      'referenceType': referenceType, // file refrerence type from db
-      'id': id, // file unqid from db
-      // 'x-amz-meta-filename': "red"
-      // filename
-      //referencetYPE
-      //REFERENCESiD
-      //UUID
+      'userid': userId,
     };
 
-    // We need to append the extension at the end otherwise Minio will save it as a generic file
+    // Generate file name and unique URL
     const fileName = hashedFileName + extension;
-    const unqurl = await this.encodeAndDecodeFileUri(
-      {
-        referenceId: referenceId,
-        referenceType: referenceType,
-        id: id,
-        fileName: fileName,
-      },
-      'construct',
-    );
-    console.log(fileName);
+    const unqurl = await this.encodeAndDecodeFileUri({ userId, fileName }, 'construct');
 
-    this.client.putObject(bucketName, unqurl, file.buffer, metaData);
+    try {
+      // // Extract and validate buffer
+      // if (!Buffer.isBuffer(file.buffer)) {
+      //   throw new HttpException('Invalid file buffer', HttpStatus.BAD_REQUEST);
+      // }
 
-    return {
-      url: unqurl,
-    };
+      // // Convert file.buffer to a proper Buffer if needed
+      // const fileBuffer = Buffer.from(file.buffer['data']);
+
+      // Upload file to MinIO
+      const upoloadedFile = await this.client.putObject(bucketName, unqurl, await Buffer.from(file.buffer['data']), metaData);
+      return { url: unqurl };
+    } catch (error) {
+      console.error('Error during MinIO upload:', error);
+      throw new HttpException('File upload to MinIO failed', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
   }
 
   async delete(objetName: string, bucketName: string = this.bucketName) {
@@ -134,17 +115,15 @@ export class MinioClientService {
 
   private async encodeAndDecodeFileUri(
     details: {
-      id: string;
-      referenceType: string;
-      referenceId: string;
+      userId: string;
       fileName: string;
     },
     type: 'construct' | 'deconstruct',
   ): Promise<string> {
-    const { id, referenceType, referenceId, fileName } = details;
+    const { userId, fileName } = details;
     let url;
     if (type === 'construct') {
-      url = `${id}_${referenceType}_${referenceId}_${process.env.MINIO_FILE_UNQ_ID}`;
+      url = `${userId}_${process.env.MINIO_FILE_UNQ_ID}_${fileName}`;
     }
     return url;
   }
